@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from twisted.words.protocols import irc
-from twisted.internet import reactor, protocol, task
+from twisted.internet import reactor, protocol, task, defer
 from twisted.python import log
 from twisted.enterprise import adbapi
 import ConfigParser
@@ -27,20 +27,33 @@ class P2000Bot(irc.IRCClient):
     def signedOn(self):
         self.join(self.factory.channel)
 
-    def privmsg(self, user, channel, msg):
-        user = user.split('!', 1)[0]
-        
-        if channel == self.nickname:
-            msg = "It isn't nice to whisper!  Play nice with the group."
-            self.msg(user, msg)
+    def privmsg(self, user, channel, message):
+        nick, _, host = user.partition('!')
+        message = message.strip()
+        if not message.startswith('!'): # not a trigger command
+            return # do nothing
+        command, sep, rest = message.lstrip('!').partition(' ')
+        print "%s: %s %s"%(nick,command,message)
+        func = getattr(self, 'command_' + command, None)
+        if func is None:
             return
-
-        if msg.startswith(self.nickname + ":"):
-            msg = "%s: I am a log bot" % user
-            self.msg(channel, msg)
+        d = defer.maybeDeferred(func, rest)
+        d.addErrback(self._show_error)
+        if channel == self.nickname:
+            d.addCallback(self._send_message, nick)
+        else:
+            d.addCallback(self._send_message, channel, nick)
 
     def action(self, user, channel, msg):
         user = user.split('!', 1)[0]
+
+    def _show_error(self, failure):
+        return failure.getErrorMessage()
+
+    def _send_message(self, msg, target, nick=None):
+        if nick:
+            msg = '%s, %s' % (nick, msg)
+        self.msg(target, msg)
 
     # irc callbacks
 
@@ -51,7 +64,28 @@ class P2000Bot(irc.IRCClient):
     def alterCollidedNick(self, nickname):
         return nickname + '^'
 
+    # irc commands
 
+    def command_test(self,message):
+        return "Everting is working fine"
+
+    def command_say(self,message):
+        return message
+
+    def command_search(self,msg):
+        cursor = self.factory.db.cursor()
+        cursor.execute("""SELECT message_id,timestamp,cap,message FROM messages WHERE message LIKE (\'%%%s%%\') ORDER BY  `messages`.`timestamp` ASC LIMIT 5""" , (msg))
+        _return = ""
+        if cursor.rowcount == 0:
+            return "Nothing found"
+        for message in cursor.fetchall():
+            cap = self.factory.capLookup(message[2])
+            if cap == None:
+                msg = "%s %s" % (message[2],message[3])
+            else:
+                msg = """(%s) %s: %s (%s) "%s": %s""" % (message[2],cap['group'],cap['city'],cap['region'],cap['name'],message[3])
+            _return = "%s\n%s" %(_return, msg)
+        return _return
 
 class P2000BotFactory(protocol.ClientFactory):
 
@@ -63,8 +97,8 @@ class P2000BotFactory(protocol.ClientFactory):
         self.db = mdb.connect( 
             host=self.cfg.get('db','host'), user=self.cfg.get('db','user'),
             passwd=self.cfg.get('db','password'), db=self.cfg.get('db','database'))
-        self.lc = task.LoopingCall(self.databaserunner)
-        self.lc.start(2)
+        #self.lc = task.LoopingCall(self.databaserunner)
+        #self.lc.start(2)
 
     def buildProtocol(self, addr):
         p = P2000Bot()
@@ -93,7 +127,6 @@ class P2000BotFactory(protocol.ClientFactory):
 
    
     def databaserunner(self):
-        print "Starting db run"
         cursor = self.db.cursor()
         cursor.execute("SELECT lastid FROM queue LIMIT 1")
         last_id = cursor.fetchone()
@@ -113,7 +146,6 @@ class P2000BotFactory(protocol.ClientFactory):
         cursor = self.db.cursor()
         cursor.execute("UPDATE queue SET lastid = %s WHERE id = 0" % (last_id))
         self.db.commit()
-        print "ending db run"
 
 if __name__ == '__main__':
     config = ConfigParser.RawConfigParser()

@@ -74,7 +74,7 @@ class P2000Bot(irc.IRCClient):
 
     def command_search(self,msg):
         cursor = self.factory.db.cursor()
-        cursor.execute("""SELECT message_id,timestamp,cap,message FROM messages WHERE message LIKE (\'%%%s%%\') ORDER BY  `messages`.`timestamp` ASC LIMIT 5""" , (msg))
+        cursor.execute("""SELECT message_id,timestamp,cap,message FROM messages WHERE message LIKE ('%%?%%') ORDER BY  `messages`.`timestamp` ASC LIMIT 5""" , (msg))
         _return = ""
         if cursor.rowcount == 0:
             return "Nothing found"
@@ -97,8 +97,8 @@ class P2000BotFactory(protocol.ClientFactory):
         self.db = mdb.connect( 
             host=self.cfg.get('db','host'), user=self.cfg.get('db','user'),
             passwd=self.cfg.get('db','password'), db=self.cfg.get('db','database'))
-        #self.lc = task.LoopingCall(self.databaserunner)
-        #self.lc.start(2)
+        self.lc = task.LoopingCall(self.databaserunner)
+        self.lc.start(2)
 
     def buildProtocol(self, addr):
         p = P2000Bot()
@@ -122,7 +122,7 @@ class P2000BotFactory(protocol.ClientFactory):
 
     def capLookup(self,capid):
         cursor = self.db.cursor(mdb.cursors.DictCursor)
-        cursor.execute("SELECT * FROM capcodes WHERE capid = %s LIMIT 1" % (capid))
+        cursor.execute("SELECT * FROM capcodes WHERE capid = %s LIMIT 1", capid)
         return cursor.fetchone()
 
    
@@ -135,7 +135,9 @@ class P2000BotFactory(protocol.ClientFactory):
         cursor.execute("SELECT message_id,timestamp,cap,message FROM messages WHERE message_id > '%s' ORDER BY  `messages`.`timestamp` ASC LIMIT 5" % (last_id))
         for message in cursor.fetchall():
             for client in self.clients:
-                cap = self.capLookup(message[2])
+                cap = None
+                if message[2] != None:
+                    cap = self.capLookup(message[2])
                 if cap == None:
                     msg = "%s %s" % (message[2],message[3])
                 else:
